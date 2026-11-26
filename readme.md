@@ -82,13 +82,13 @@ All metrics operate on daily log returns $r_t = \ln(P_t / P_{t-1})$ over split/d
 
 | Quantitative Measure | Mathematical Definition |
 | :--- | :--- |
-| **Annualized Return & Volatility** | $\mu_{\text{ann}} = \bar{r}_p \times 252$, $\;\sigma_{\text{ann}} = \sqrt{w^\top \Sigma w} \times \sqrt{252}$ |
-| **Sharpe / Sortino / Calmar** | $(\mu_{\text{ann}} - r_f)/\sigma_{\text{ann}}$, $\;(\mu_{\text{ann}} - r_f)/\sigma_{\text{down}}$, $\;\mu_{\text{ann}} / |\text{MaxDD}|$ ($r_f = 6.75\%$) |
-| **Historical & Parametric VaR / CVaR** | Empirical $(1-c)$ quantile & conditional tail mean; Normal $\mu_p + z_{1-c}\sigma_p$ |
-| **Euler Marginal Risk Share** | $RC_i = \dfrac{w_i (\Sigma w)_i}{w^\top \Sigma w}$ (exact additive variance decomposition) |
-| **Diversification Ratio** | $DR = \dfrac{\sum_i w_i \sigma_i}{\sigma_p}$ |
-| **Portfolio Beta** | $\beta_i = \dfrac{\operatorname{Cov}(r_i, r_p)}{\operatorname{Var}(r_p)}$ |
-| **Cholesky Monte Carlo** | $R_{\text{sim}} = \mu + Z L^\top$ where $\Sigma = L L^\top$, vectorized across 10,000 paths × horizon |
+| **Annualized Return & Volatility** | $\mu_{\text{ann}} = \bar{r}_{p} \times 252$ and $\sigma_{\text{ann}} = \sqrt{w^{\top} \Sigma w} \times \sqrt{252}$ |
+| **Sharpe / Sortino / Calmar** | $(\mu_{\text{ann}} - r_{f}) / \sigma_{\text{ann}}$, $(\mu_{\text{ann}} - r_{f}) / \sigma_{\text{down}}$, and $\mu_{\text{ann}} / \lvert \text{MaxDD} \rvert$ ($r_{f} = 6.75\%$) |
+| **Historical & Parametric VaR / CVaR** | Empirical $(1 - c)$ quantile & conditional tail mean; Normal $\mu_{p} + z_{1-c}\sigma_{p}$ |
+| **Euler Marginal Risk Share** | $RC_{i} = \dfrac{w_{i} (\Sigma w)_{i}}{w^{\top} \Sigma w}$ (exact additive variance decomposition) |
+| **Diversification Ratio** | $DR = \dfrac{\sum_{i} w_{i} \sigma_{i}}{\sigma_{p}}$ |
+| **Portfolio Beta** | $\beta_{i} = \dfrac{\text{Cov}(r_{i}, r_{p})}{\text{Var}(r_{p})}$ |
+| **Cholesky Monte Carlo** | $R_{\text{sim}} = \mu + Z L^{\top}$ where $\Sigma = L L^{\top}$, vectorized across 10,000 paths × horizon |
 
 ### Model Risk Assumptions & Limitations
 * **Single-Regime Sample:** 850 trading days (~3.4 years) limits tail density at 99% confidence (~8 tail observations), making 99% Historical VaR noisier than 95% VaR.
