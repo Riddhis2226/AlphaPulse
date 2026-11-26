@@ -1,5 +1,3 @@
-&lt;div align=&quot;center&quot;&gt;
-
 # AlphaPulse — Financial Intelligence & Portfolio Risk Monitor
 
 **Institutional market-risk engine, Euler risk-attribution framework, and macro stress-testing terminal for a multi-asset INR portfolio.**
@@ -13,8 +11,6 @@
 [](https://docs.astral.sh/ruff/)
 
 [**Market Dataset (Hugging Face)**](https://huggingface.co/datasets/RS2226/alphapulse-market-data) · [**Source Repository**](https://github.com/Riddhis2226/AlphaPulse)
-
-&lt;/div&gt;
 
 ---
 
