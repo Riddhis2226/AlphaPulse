@@ -1,0 +1,586 @@
+/* AlphaPulse — design system
+   Light: "Paper" (cool grey canvas, white panels, ultramarine accent)
+   Dark:  "Graphite" (blue-black canvas, raised panels, soft blue accent)
+   Rules of the house: borders instead of shadows, one radius scale, numbers in
+   tabular mono, colour only where it carries meaning (gain / loss / warning). */
+
+#app-root[data-theme="light"] {
+  --ap-bg: #f2f4f7;
+  --ap-nav: #ffffff;
+  --ap-card: #ffffff;
+  --ap-card-header: #ffffff;
+  --ap-border: #e1e5ec;
+  --ap-border-strong: #c7cfdb;
+  --ap-text: #0e1726;
+  --ap-muted: #566175;
+  --ap-input-bg: #ffffff;
+  --ap-hover-row: #f5f7fb;
+  --ap-accent: #1f4fd8;
+  --ap-gain: #0a7f5a;
+  --ap-loss: #c8283d;
+  --ap-warn: #a85a08;
+  --ap-chip-bg: #eef2fb;
+  --ap-focus: rgba(31, 79, 216, 0.45);
+}
+
+#app-root[data-theme="dark"] {
+  --ap-bg: #090c12;
+  --ap-nav: #0d121b;
+  --ap-card: #111723;
+  --ap-card-header: #111723;
+  --ap-border: rgba(148, 163, 184, 0.14);
+  --ap-border-strong: rgba(148, 163, 184, 0.3);
+  --ap-text: #e8edf5;
+  --ap-muted: #98a3b6;
+  --ap-input-bg: #0b1019;
+  --ap-hover-row: rgba(106, 166, 255, 0.07);
+  --ap-accent: #6aa6ff;
+  --ap-gain: #34d399;
+  --ap-loss: #fb7185;
+  --ap-warn: #fbbf24;
+  --ap-chip-bg: rgba(106, 166, 255, 0.12);
+  --ap-focus: rgba(106, 166, 255, 0.55);
+}
+
+#app-root {
+  --ap-nav-h: 56px;
+  --ap-radius: 8px;
+  --ap-radius-sm: 6px;
+  background-color: var(--ap-bg);
+  color: var(--ap-text);
+  min-height: 100vh;
+  font-family: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 0.92rem;
+  line-height: 1.45;
+  padding-bottom: 3rem;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.ap-mono {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.ap-muted { color: var(--ap-muted) !important; }
+.ap-text  { color: var(--ap-text) !important; }
+.ap-gain  { color: var(--ap-gain) !important; }
+.ap-loss  { color: var(--ap-loss) !important; }
+.ap-warn  { color: var(--ap-warn) !important; }
+
+/* ── Focus: always visible for keyboard users ─────────────────────────── */
+#app-root :focus-visible {
+  outline: 2px solid var(--ap-focus);
+  outline-offset: 2px;
+}
+
+/* ── Top bar ──────────────────────────────────────────────────────────── */
+.ap-navbar {
+  background-color: var(--ap-nav) !important;
+  border-bottom: 1px solid var(--ap-border);
+  height: var(--ap-nav-h);
+  padding: 0 1.5rem;
+  z-index: 1030;
+}
+
+.ap-brand-title {
+  font-weight: 600;
+  font-size: 1.12rem;
+  letter-spacing: -0.01em;
+  color: var(--ap-text);
+}
+
+.ap-brand-title::before {
+  content: "";
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 0.55rem;
+  border-radius: 2px;
+  background: var(--ap-accent);
+  transform: translateY(-1px);
+}
+
+.ap-brand-sub {
+  color: var(--ap-muted);
+  font-size: 0.85rem;
+  padding-left: 0.75rem;
+  margin-left: 0.75rem;
+  border-left: 1px solid var(--ap-border-strong);
+}
+
+.ap-status-pill {
+  align-items: center;
+  padding: 0.25rem 0.65rem;
+  border-radius: var(--ap-radius-sm);
+  background: var(--ap-chip-bg);
+  color: var(--ap-muted);
+  font-size: 0.74rem;
+}
+
+.ap-btn.btn {
+  background: transparent !important;
+  color: var(--ap-text) !important;
+  border: 1px solid var(--ap-border-strong) !important;
+  border-radius: var(--ap-radius-sm) !important;
+  font-size: 0.8rem;
+  font-weight: 500;
+  padding: 0.3rem 0.8rem;
+}
+
+.ap-btn.btn:hover {
+  border-color: var(--ap-accent) !important;
+  color: var(--ap-accent) !important;
+}
+
+#app-root .form-switch .form-check-input {
+  background-color: var(--ap-border-strong);
+  border-color: var(--ap-border-strong);
+  cursor: pointer;
+}
+
+#app-root .form-switch .form-check-input:checked {
+  background-color: var(--ap-accent);
+  border-color: var(--ap-accent);
+}
+
+/* ── Global controls (sticky under the top bar) ───────────────────────── */
+.ap-controls {
+  position: sticky;
+  top: var(--ap-nav-h);
+  z-index: 1020;
+  background-color: var(--ap-nav);
+  border-bottom: 1px solid var(--ap-border);
+  padding: 0.55rem 1.5rem;
+}
+
+.ap-control-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.ap-field-label {
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--ap-muted);
+}
+
+.ap-coverage {
+  font-size: 0.74rem;
+  color: var(--ap-muted);
+}
+
+/* Segmented control (dcc.RadioItems with className="ap-seg").
+   Styles the <label> child so it works with both the classic and the newer
+   Radix-based dcc DOM. */
+.ap-seg {
+  display: inline-flex !important;
+  gap: 2px;
+  padding: 2px;
+  background: var(--ap-bg);
+  border: 1px solid var(--ap-border);
+  border-radius: var(--ap-radius);
+}
+
+.ap-seg > label {
+  position: relative;
+  display: inline-flex !important;
+  align-items: center;
+  margin: 0 !important;
+  padding: 0.26rem 0.8rem !important;
+  border-radius: var(--ap-radius-sm);
+  background: transparent !important;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--ap-muted) !important;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.ap-seg > label * { color: inherit !important; font-weight: inherit; }
+.ap-seg > label:hover { color: var(--ap-text) !important; }
+
+.ap-seg > label:has(input:checked),
+.ap-seg > label.selected {
+  background: var(--ap-card) !important;
+  color: var(--ap-accent) !important;
+  font-weight: 600;
+  box-shadow: 0 0 0 1px var(--ap-border-strong);
+}
+
+.ap-seg > label:has(input:focus-visible) {
+  outline: 2px solid var(--ap-focus);
+  outline-offset: 1px;
+}
+
+.ap-seg input,
+.ap-seg .dash-options-list-option-wrapper {
+  position: absolute !important;
+  opacity: 0;
+  width: 0 !important;
+  height: 0 !important;
+  margin: 0 !important;
+  overflow: hidden;
+}
+
+/* ── Tabs: underline style ────────────────────────────────────────────── */
+#app-root .nav-tabs {
+  border-bottom: 1px solid var(--ap-border) !important;
+  gap: 1.4rem;
+  margin-top: 0.4rem;
+}
+
+#app-root .nav-tabs .nav-item { margin-bottom: -1px; }
+
+#app-root .nav-tabs .nav-link {
+  background: transparent !important;
+  border: 0 !important;
+  border-bottom: 2px solid transparent !important;
+  border-radius: 0 !important;
+  color: var(--ap-muted) !important;
+  font-weight: 500;
+  font-size: 0.92rem;
+  padding: 0.7rem 0.1rem;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+
+#app-root .nav-tabs .nav-link:hover { color: var(--ap-text) !important; }
+
+#app-root .nav-tabs .nav-link.active {
+  color: var(--ap-text) !important;
+  font-weight: 600;
+  border-bottom-color: var(--ap-accent) !important;
+}
+
+/* ── Panels ───────────────────────────────────────────────────────────── */
+.ap-card {
+  background-color: var(--ap-card) !important;
+  border: 1px solid var(--ap-border) !important;
+  border-radius: var(--ap-radius) !important;
+  color: var(--ap-text) !important;
+}
+
+.ap-card-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.15rem 1rem;
+  padding: 0.7rem 1rem !important;
+  background-color: var(--ap-card-header) !important;
+  border-bottom: 1px solid var(--ap-border) !important;
+  border-top-left-radius: var(--ap-radius) !important;
+  border-top-right-radius: var(--ap-radius) !important;
+}
+
+.ap-card-title { font-weight: 600; font-size: 0.94rem; color: var(--ap-text); }
+.ap-card-sub   { font-size: 0.78rem; color: var(--ap-muted); }
+
+.ap-help {
+  margin-top: 0.35rem;
+  font-size: 0.76rem;
+  color: var(--ap-muted);
+}
+
+/* ── KPI tiles ────────────────────────────────────────────────────────── */
+.ap-kpi {
+  padding: 0.9rem 1rem;
+  background-color: var(--ap-card);
+  border: 1px solid var(--ap-border);
+  border-radius: var(--ap-radius);
+}
+
+.ap-kpi-label { font-size: 0.8rem; font-weight: 500; color: var(--ap-muted); }
+
+.ap-kpi-value {
+  margin: 0.2rem 0 0.1rem;
+  font-size: 1.75rem;
+  font-weight: 600;
+  line-height: 1.15;
+}
+
+.ap-kpi-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-top: 0.55rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--ap-border);
+  font-size: 0.78rem;
+}
+
+.ap-kpi-sub { font-weight: 500; color: var(--ap-text); }
+
+/* ── Summary line + insights ──────────────────────────────────────────── */
+.ap-headline {
+  max-width: none;
+  margin: 0.15rem 0 0.8rem;
+  font-size: 0.98rem;
+  line-height: 1.45;
+  color: var(--ap-text);
+}
+
+.ap-headline .ap-mono { font-weight: 500; }
+
+.ap-insight {
+  padding: 0.75rem 1rem;
+  background-color: var(--ap-card);
+  border: 1px solid var(--ap-border);
+  border-left: 3px solid var(--ap-accent);
+  border-radius: var(--ap-radius-sm);
+}
+
+.ap-insight-title { font-size: 0.82rem; font-weight: 600; margin-bottom: 0.15rem; }
+.ap-insight-body  { font-size: 0.84rem; color: var(--ap-muted); }
+
+/* ── Asset stat strip ─────────────────────────────────────────────────── */
+.ap-stat {
+  padding: 0.4rem 0.7rem;
+  background: var(--ap-bg);
+  border: 1px solid var(--ap-border);
+  border-radius: var(--ap-radius-sm);
+}
+
+.ap-stat-label { font-size: 0.72rem; color: var(--ap-muted); }
+.ap-stat-value { font-size: 0.98rem; font-weight: 600; }
+
+/* ── Holdings table ───────────────────────────────────────────────────── */
+.ap-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.84rem;
+}
+
+.ap-table thead th {
+  padding: 0.55rem 0.75rem;
+  background-color: var(--ap-card-header);
+  border-bottom: 1px solid var(--ap-border-strong);
+  color: var(--ap-muted);
+  font-size: 0.75rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.ap-table thead th[title] {
+  text-decoration: underline dotted var(--ap-border-strong);
+  text-underline-offset: 3px;
+  cursor: help;
+}
+
+.ap-table tbody td,
+.ap-table tfoot td {
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid var(--ap-border);
+  color: var(--ap-text);
+  vertical-align: middle;
+}
+
+.ap-table tbody tr:hover { background-color: var(--ap-hover-row); }
+
+.ap-table tfoot td {
+  border-top: 1px solid var(--ap-border-strong);
+  border-bottom: 0;
+  background-color: var(--ap-bg);
+  font-weight: 600;
+}
+
+.ap-table tfoot td:first-child { border-bottom-left-radius: var(--ap-radius-sm); }
+.ap-table tfoot td:last-child  { border-bottom-right-radius: var(--ap-radius-sm); }
+
+.ap-bar {
+  min-width: 5.5rem;
+  padding: 0.12rem 0.5rem;
+  border-radius: 4px;
+  text-align: right;
+}
+
+.ap-sector {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.8rem;
+  color: var(--ap-muted);
+}
+
+.ap-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+
+/* ── Inputs ───────────────────────────────────────────────────────────── */
+.ap-input {
+  background-color: var(--ap-input-bg) !important;
+  color: var(--ap-text) !important;
+  border: 1px solid var(--ap-border-strong) !important;
+  border-radius: var(--ap-radius-sm) !important;
+  font-size: 0.88rem;
+}
+
+.ap-input:focus {
+  border-color: var(--ap-accent) !important;
+  box-shadow: 0 0 0 3px var(--ap-focus) !important;
+}
+
+/* Dropdowns — Dash 2.x (react-select) */
+#app-root .Select-control {
+  background-color: var(--ap-input-bg) !important;
+  border: 1px solid var(--ap-border-strong) !important;
+  border-radius: var(--ap-radius-sm) !important;
+  color: var(--ap-text) !important;
+  font-size: 0.88rem;
+}
+
+#app-root .Select.is-focused:not(.is-open) > .Select-control,
+#app-root .Select.is-open > .Select-control {
+  border-color: var(--ap-accent) !important;
+}
+
+#app-root .Select-value-label,
+#app-root .Select-placeholder,
+#app-root .Select-input > input { color: var(--ap-text) !important; }
+
+#app-root .Select-menu-outer {
+  background-color: var(--ap-card) !important;
+  border: 1px solid var(--ap-border-strong) !important;
+  border-radius: var(--ap-radius-sm) !important;
+  z-index: 1050;
+}
+
+#app-root .VirtualizedSelectOption {
+  background-color: var(--ap-card) !important;
+  color: var(--ap-text) !important;
+}
+
+#app-root .VirtualizedSelectFocusedOption {
+  background-color: var(--ap-hover-row) !important;
+  color: var(--ap-accent) !important;
+}
+
+/* Dropdowns — Dash 3.x (best effort; harmless on Dash 2) */
+#app-root .dash-dropdown,
+#app-root .dash-dropdown-trigger {
+  background-color: var(--ap-input-bg) !important;
+  color: var(--ap-text) !important;
+  border-color: var(--ap-border-strong) !important;
+}
+
+#app-root .dash-dropdown-content {
+  background-color: var(--ap-card) !important;
+  color: var(--ap-text) !important;
+  border: 1px solid var(--ap-border-strong) !important;
+}
+
+
+/* Dropdown trigger — Dash 3.1+ / 4 */
+#app-root .dash-dropdown {
+  border-radius: var(--ap-radius-sm) !important;
+  font-size: 0.88rem;
+}
+
+#app-root .dash-dropdown:focus-visible,
+#app-root .dash-dropdown[data-state="open"] { border-color: var(--ap-accent) !important; }
+
+/* Number input — Dash 3.1+ / 4 (wrapper carries the border; inner input is bare) */
+#app-root .ap-input.dash-input-container {
+  display: flex;
+  align-items: stretch;
+  padding: 0 !important;
+  overflow: hidden;
+}
+
+#app-root .ap-input:focus-within {
+  border-color: var(--ap-accent) !important;
+  box-shadow: 0 0 0 3px var(--ap-focus) !important;
+}
+
+#app-root .ap-input .dash-input-element {
+  flex: 1;
+  min-width: 0;
+  padding: 0.4rem 0.65rem;
+  border: 0 !important;
+  outline: 0;
+  box-shadow: none !important;
+  background: transparent !important;
+  color: var(--ap-text) !important;
+  font: inherit;
+}
+
+#app-root .ap-input .dash-input-stepper {
+  width: 1.9rem;
+  border: 0;
+  border-left: 1px solid var(--ap-border);
+  background: transparent !important;
+  color: var(--ap-muted) !important;
+  cursor: pointer;
+}
+
+#app-root .ap-input .dash-input-stepper:hover { color: var(--ap-accent) !important; background: var(--ap-hover-row) !important; }
+
+#app-root .dash-slider-container input[type="number"] {
+  background-color: var(--ap-input-bg) !important;
+  color: var(--ap-text) !important;
+  border: 1px solid var(--ap-border-strong) !important;
+  border-radius: var(--ap-radius-sm) !important;
+}
+
+/* Slider — Dash 3.1+ / 4 */
+#app-root .dash-slider-track { background-color: var(--ap-border-strong) !important; }
+#app-root .dash-slider-range { background-color: var(--ap-accent) !important; }
+
+#app-root .dash-slider-container [role="slider"] {
+  background-color: var(--ap-card) !important;
+  border: 2px solid var(--ap-accent) !important;
+  box-shadow: none !important;
+}
+
+#app-root .dash-slider-container [role="slider"]:focus-visible { box-shadow: 0 0 0 4px var(--ap-focus) !important; }
+#app-root .dash-slider-mark { color: var(--ap-muted) !important; font-size: 0.72rem; }
+
+/* Slider — Dash 2.x (rc-slider) */
+#app-root .rc-slider-rail {
+  background-color: var(--ap-border-strong) !important;
+  height: 4px !important;
+}
+
+#app-root .rc-slider-track {
+  background-color: var(--ap-accent) !important;
+  height: 4px !important;
+}
+
+#app-root .rc-slider-handle {
+  width: 16px !important;
+  height: 16px !important;
+  margin-top: -6px !important;
+  background-color: var(--ap-card) !important;
+  border: 2px solid var(--ap-accent) !important;
+  opacity: 1 !important;
+}
+
+#app-root .rc-slider-handle:focus-visible {
+  box-shadow: 0 0 0 4px var(--ap-focus) !important;
+}
+
+#app-root .rc-slider-dot { border-color: var(--ap-border-strong) !important; background: var(--ap-card) !important; }
+#app-root .rc-slider-mark-text { color: var(--ap-muted) !important; font-size: 0.72rem; }
+
+hr.ap-rule { border-color: var(--ap-border); opacity: 1; margin: 1.1rem 0; }
+
+/* ── Method notes ─────────────────────────────────────────────────────── */
+.ap-notes { font-size: 0.78rem; color: var(--ap-muted); line-height: 1.55; }
+.ap-notes strong { display: block; margin-bottom: 0.15rem; color: var(--ap-text); font-weight: 600; }
+
+/* ── Small screens ────────────────────────────────────────────────────── */
+@media (max-width: 767.98px) {
+  .ap-navbar   { padding: 0 1rem; }
+  .ap-controls { position: static; padding: 0.55rem 1rem; }
+  .ap-kpi-value { font-size: 1.5rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #app-root, #app-root * { transition: none !important; }
+}
