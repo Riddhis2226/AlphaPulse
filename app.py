@@ -22,6 +22,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import polars as pl
 from dash import Input, Output, State, dcc, html
+from flask import jsonify
 from huggingface_hub import hf_hub_download
 from huggingface_hub.errors import HfHubHTTPError
 from plotly.subplots import make_subplots
@@ -736,6 +737,23 @@ app = dash.Dash(
 )
 server = app.server
 
+
+@server.route("/healthz")
+def healthz():
+    """Production healthcheck endpoint for uptime monitors and cloud WSGI probes."""
+    return (
+        jsonify(
+            {
+                "status": "ok",
+                "service": "alphapulse",
+                "data_through": str(DATA_END),
+                "trading_days": int(len(PRICE_MATRIX)),
+                "assets": int(PRICE_MATRIX.shape[1]),
+            }
+        ),
+        200,
+    )
+
 app.layout = html.Div(
     id="app-root",
     **{"data-theme": "light"},
@@ -1377,6 +1395,7 @@ def update_quant_tab(
         )
     )
     apply_chart_theme(fig_corr, bool(is_dark), height=360)
+    fig_corr.update_layout(margin={"l": 76, "r": 56, "t": 28, "b": 48})
     fig_corr.update_yaxes(autorange="reversed", showgrid=False)
     fig_corr.update_xaxes(showgrid=False)
 
@@ -1391,8 +1410,11 @@ def update_quant_tab(
         text="Asset",
         hover_data=["Name", "Sharpe", "Risk Share (%)"],
     )
+    label_pos = {"SUNPHARMA": "middle left", "GOLDBEES": "top right"}
+    for tr in fig_eff.data:
+        if tr.text is not None:
+            tr.textposition = [label_pos.get(str(t), "top center") for t in tr.text]
     fig_eff.update_traces(
-        textposition="top center",
         textfont={"size": 10, "color": pal["muted"]},
         marker={"line": {"width": 1, "color": pal["card"]}, "opacity": 0.9},
     )

@@ -1,5 +1,6 @@
 """Week 2: Vectorized Quantitative Risk Engine (Log Returns, Rolling Volatility,
-Covariance/Correlation, 10,000+ Cholesky Monte Carlo Paths, VaR/CVaR, Sharpe Ratio).
+Covariance/Correlation, Euler Risk Attribution, Kupiec & Christoffersen VaR
+Backtesting, and 10,000+ Normal / Student-t Cholesky Monte Carlo Paths).
 """
 
 from __future__ import annotations
@@ -8,6 +9,7 @@ import logging
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 import httpx
 import numpy as np
@@ -17,7 +19,7 @@ from huggingface_hub import HfApi
 from huggingface_hub.errors import HfHubHTTPError
 from pymongo import MongoClient, UpdateOne
 from pymongo.errors import PyMongoError
-from scipy.stats import norm
+from scipy.stats import chi2, norm
 
 from src.config import (
     PORTFOLIO_ASSETS,
@@ -43,7 +45,7 @@ def load_market_prices(parquet_path: Path | None = None) -> pl.DataFrame:
 
 
 def build_price_matrix(df: pl.DataFrame) -> pd.DataFrame:
-    """Pivot long market_prices into a date-indexed wide float32 close-price DataFrame with zero NaNs."""
+    """Pivot long market_prices into a date-indexed wide float64 close-price DataFrame with zero NaNs."""
     wide = (
         df.pivot(on="asset_id", index="date", values="close")
         .sort("date")
@@ -51,20 +53,72 @@ def build_price_matrix(df: pl.DataFrame) -> pd.DataFrame:
         .set_index("date")
     )
     asset_order = [a.asset_id for a in PORTFOLIO_ASSETS if a.asset_id in wide.columns]
-    return wide[asset_order].dropna(how="any").astype(np.float32)
+    return wide[asset_order].dropna(how="any").astype(np.float64)
 
 
 def compute_log_returns(price_matrix: pd.DataFrame) -> pd.DataFrame:
-    """Compute vectorized daily log returns: ln(P_t / P_{t-1})."""
+    """Compute vectorized daily log returns in float64 precision: ln(P_t / P_{t-1})."""
     prices_arr = price_matrix.to_numpy(dtype=np.float64)
-    log_ret_arr = np.diff(np.log(prices_arr), axis=0).astype(np.float32)
-    return pd.DataFrame(log_ret_arr, index=price_matrix.index[1:], columns=price_matrix.columns)
+    log_ret_arr = np.diff(np.log(prices_arr), axis=0)
+    return pd.DataFrame(
+        log_ret_arr,
+        index=price_matrix.index[1:],
+        columns=price_matrix.columns,
+        dtype=np.float64,
+    )
 
 
 def compute_rolling_volatility(log_returns: pd.DataFrame, window: int = 30) -> pd.DataFrame:
-    """Compute annualized 30-day rolling volatility per asset."""
-    rolling_vol = log_returns.rolling(window=window).std() * np.sqrt(TRADING_DAYS)
-    return rolling_vol.dropna().astype(np.float32)
+    """Compute annualized rolling volatility per asset in float64 precision."""
+    rolling_vol = log_returns.astype(np.float64).rolling(window=window).std() * np.sqrt(TRADING_DAYS)
+    return rolling_vol.dropna()
+
+
+def compute_euler_risk_attribution(
+    log_returns: pd.DataFrame,
+    weights: np.ndarray,
+) -> pd.DataFrame:
+    """Compute exact float64 Euler homogeneous volatility decomposition.
+
+    Returns marginal contribution to volatility (MCR), component contribution
+    to volatility (CCR = w_i * MCR_i, summing to annualized portfolio vol),
+    and additive variance risk share (RC_i = w_i * (Sigma w)_i / (w^T Sigma w),
+    summing to 1.0 exactly).
+    """
+    w = np.asarray(weights, dtype=np.float64)
+    w = w / w.sum()
+
+    ret_arr = log_returns.to_numpy(dtype=np.float64)
+    cov_ann = np.cov(ret_arr, rowvar=False) * TRADING_DAYS
+    port_var = float(w.T @ cov_ann @ w)
+    port_vol = float(np.sqrt(port_var))
+
+    if port_var <= 0.0 or port_vol <= 0.0:
+        n = len(w)
+        return pd.DataFrame(
+            {
+                "asset_id": list(log_returns.columns),
+                "weight": w,
+                "mcr": np.zeros(n, dtype=np.float64),
+                "ccr": np.zeros(n, dtype=np.float64),
+                "risk_share": np.zeros(n, dtype=np.float64),
+            }
+        )
+
+    sigma_w = cov_ann @ w
+    mcr = sigma_w / port_vol
+    ccr = w * mcr
+    risk_share = (w * sigma_w) / port_var
+
+    return pd.DataFrame(
+        {
+            "asset_id": list(log_returns.columns),
+            "weight": w,
+            "mcr": mcr,
+            "ccr": ccr,
+            "risk_share": risk_share,
+        }
+    )
 
 
 def compute_portfolio_kpis(
@@ -73,7 +127,7 @@ def compute_portfolio_kpis(
     confidence: float = 0.95,
     risk_free_rate: float = DEFAULT_RISK_FREE_RATE,
 ) -> dict[str, float]:
-    """Compute vectorized portfolio return, volatility, Sharpe, Parametric & Historical VaR/CVaR."""
+    """Compute vectorized float64 portfolio return, volatility, Sharpe, Parametric & Historical VaR/CVaR."""
     w = np.asarray(weights, dtype=np.float64)
     w = w / w.sum()
 
@@ -118,6 +172,88 @@ def compute_portfolio_kpis(
     }
 
 
+def backtest_var_exceptions(
+    log_returns: pd.DataFrame,
+    weights: np.ndarray,
+    confidence: float = 0.95,
+    window: int = 250,
+    significance: float = 0.05,
+) -> dict[str, float | int | bool]:
+    """Run rolling out-of-sample 1D Historical VaR backtest with Kupiec POF
+    (unconditional coverage) and Christoffersen (independence & conditional coverage) tests.
+    """
+    w = np.asarray(weights, dtype=np.float64)
+    w = w / w.sum()
+    port_ret = log_returns.to_numpy(dtype=np.float64) @ w
+
+    if len(port_ret) <= window + 5:
+        msg = f"Need more than {window + 5} return observations for rolling VaR backtest."
+        raise ValueError(msg)
+
+    alpha = 1.0 - confidence
+    n_oos = len(port_ret) - window
+    exceptions = np.zeros(n_oos, dtype=np.int64)
+
+    for i in range(n_oos):
+        hist_slice = port_ret[i : i + window]
+        var_thresh = -float(np.percentile(hist_slice, alpha * 100.0))
+        exceptions[i] = 1 if (-port_ret[i + window] > var_thresh) else 0
+
+    x = int(exceptions.sum())
+    p_hat = x / n_oos
+    eps = 1e-12
+
+    # Kupiec Proportion of Failures (POF) LR test (df=1)
+    p_clip = min(max(p_hat, eps), 1.0 - eps)
+    log_l0 = (n_oos - x) * np.log(1.0 - alpha) + x * np.log(alpha)
+    log_l1 = (n_oos - x) * np.log(1.0 - p_clip) + x * np.log(p_clip)
+    lr_pof = float(max(0.0, -2.0 * (log_l0 - log_l1)))
+    p_val_pof = float(chi2.sf(lr_pof, df=1))
+
+    # Christoffersen Independence LR test (df=1)
+    prev_ex = exceptions[:-1]
+    curr_ex = exceptions[1:]
+    n00 = int(np.sum((prev_ex == 0) & (curr_ex == 0)))
+    n01 = int(np.sum((prev_ex == 0) & (curr_ex == 1)))
+    n10 = int(np.sum((prev_ex == 1) & (curr_ex == 0)))
+    n11 = int(np.sum((prev_ex == 1) & (curr_ex == 1)))
+
+    pi0 = n01 / (n00 + n01) if (n00 + n01) > 0 else 0.0
+    pi1 = n11 / (n10 + n11) if (n10 + n11) > 0 else 0.0
+    pi_all = (n01 + n11) / max(n00 + n01 + n10 + n11, 1)
+
+    def _binom_ll(k: int, n: int, p: float) -> float:
+        if n == 0:
+            return 0.0
+        pc = min(max(p, eps), 1.0 - eps)
+        return float((n - k) * np.log(1.0 - pc) + k * np.log(pc))
+
+    ll_ind_null = _binom_ll(n01 + n11, n00 + n01 + n10 + n11, pi_all)
+    ll_ind_alt = _binom_ll(n01, n00 + n01, pi0) + _binom_ll(n11, n10 + n11, pi1)
+    lr_ind = float(max(0.0, -2.0 * (ll_ind_null - ll_ind_alt)))
+    p_val_ind = float(chi2.sf(lr_ind, df=1))
+
+    # Joint Conditional Coverage LR test (df=2)
+    lr_cc = lr_pof + lr_ind
+    p_val_cc = float(chi2.sf(lr_cc, df=2))
+
+    return {
+        "n_observations": n_oos,
+        "n_exceptions": x,
+        "expected_rate": round(alpha, 4),
+        "observed_rate": round(p_hat, 4),
+        "kupiec_lr": round(lr_pof, 4),
+        "kupiec_p_value": round(p_val_pof, 4),
+        "pass_kupiec": p_val_pof >= significance,
+        "christoffersen_lr": round(lr_ind, 4),
+        "christoffersen_p_value": round(p_val_ind, 4),
+        "pass_christoffersen": p_val_ind >= significance,
+        "conditional_coverage_lr": round(lr_cc, 4),
+        "conditional_coverage_p_value": round(p_val_cc, 4),
+        "pass_conditional_coverage": p_val_cc >= significance,
+    }
+
+
 def run_monte_carlo(
     log_returns: pd.DataFrame,
     weights: np.ndarray,
@@ -126,8 +262,13 @@ def run_monte_carlo(
     initial_capital: float = 1_000_000.0,
     confidence: float = 0.95,
     seed: int = 42,
+    distribution: Literal["normal", "student_t"] = "normal",
+    df: float = 5.0,
 ) -> dict[str, object]:
-    """Run vectorized Cholesky-correlated Monte Carlo simulations with zero Python loops."""
+    """Run vectorized float64 Cholesky-correlated Monte Carlo simulations with zero Python loops.
+
+    Supports Gaussian ('normal') and variance-matched Multivariate Student-t ('student_t') shocks.
+    """
     w = np.asarray(weights, dtype=np.float64)
     w = w / w.sum()
 
@@ -135,20 +276,30 @@ def run_monte_carlo(
     mean_daily = ret_arr.mean(axis=0)
     cov_daily = np.cov(ret_arr, rowvar=False)
 
-    # Cholesky decomposition: Sigma = L @ L^T
+    # Cholesky decomposition in float64: Sigma = L @ L^T
     chol = np.linalg.cholesky(cov_daily)
     rng = np.random.default_rng(seed)
 
     # Shape: (horizon_days, n_simulations, n_assets)
     n_assets = ret_arr.shape[1]
     z = rng.standard_normal((horizon_days, n_simulations, n_assets), dtype=np.float64)
+
+    if distribution == "student_t":
+        if df <= 2.0:
+            msg = "Student-t degrees of freedom (df) must be > 2.0 to preserve finite variance."
+            raise ValueError(msg)
+        # Shared chi-square scaling per (day, path) induces multivariate tail dependence
+        chi2_draws = rng.chisquare(df, size=(horizon_days, n_simulations, 1))
+        scale = np.sqrt((df - 2.0) / chi2_draws)
+        z = z * scale
+
     correlated_shocks = z @ chol.T
     sim_asset_returns = mean_daily + correlated_shocks
 
     # Portfolio daily log returns across all simulations: (horizon_days, n_simulations)
     sim_port_log_ret = sim_asset_returns @ w
     cum_log_paths = np.cumsum(sim_port_log_ret, axis=0)
-    portfolio_paths = (initial_capital * np.exp(cum_log_paths)).astype(np.float32)
+    portfolio_paths = initial_capital * np.exp(cum_log_paths)
 
     terminal_values = portfolio_paths[-1, :]
     terminal_returns = (terminal_values / initial_capital) - 1.0
@@ -159,8 +310,9 @@ def run_monte_carlo(
     percentiles = np.percentile(portfolio_paths, [5, 25, 50, 75, 95], axis=1)
 
     return {
-        "portfolio_paths": portfolio_paths,
-        "terminal_values": terminal_values,
+        "distribution": distribution,
+        "portfolio_paths": portfolio_paths.astype(np.float32),
+        "terminal_values": terminal_values.astype(np.float32),
         "terminal_returns": terminal_returns.astype(np.float32),
         "mc_var_95_horizon_pct": round(mc_var_pct, 6),
         "mc_var_95_horizon_inr": round(mc_var_inr, 2),
@@ -296,10 +448,12 @@ def run_week2_pipeline() -> dict[str, object]:
     price_matrix = build_price_matrix(df)
     log_returns = compute_log_returns(price_matrix)
     rolling_vol = compute_rolling_volatility(log_returns, window=30)
-    corr_matrix = log_returns.corr().astype(np.float32)
+    corr_matrix = log_returns.corr()
 
     weights = np.array([a.weight for a in PORTFOLIO_ASSETS if a.asset_id in price_matrix.columns])
     kpis = compute_portfolio_kpis(log_returns, weights, confidence=settings.var_confidence)
+    euler_attr = compute_euler_risk_attribution(log_returns, weights)
+    backtest = backtest_var_exceptions(log_returns, weights, confidence=settings.var_confidence)
     mc_result = run_monte_carlo(
         log_returns,
         weights,
@@ -317,6 +471,8 @@ def run_week2_pipeline() -> dict[str, object]:
         "rolling_vol": rolling_vol,
         "corr_matrix": corr_matrix,
         "kpis": kpis,
+        "euler_attribution": euler_attr,
+        "var_backtest": backtest,
         "mc_result": mc_result,
     }
 
@@ -325,3 +481,4 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
     results = run_week2_pipeline()
     logger.info("Portfolio KPIs: %s", results["kpis"])
+    logger.info("VaR Backtest: %s", results["var_backtest"])
