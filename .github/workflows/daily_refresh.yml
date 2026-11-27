@@ -1,0 +1,35 @@
+﻿name: AlphaPulse Daily Market Refresh
+
+on:
+  schedule:
+    # Runs Monday-Friday at 11:00 UTC (16:30 IST, 1 hour after NSE market close)
+    - cron: "0 11 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  refresh-market-data:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Sync dependencies
+        run: uv sync --frozen
+
+      - name: Run AlphaPulse ingestion & quant pipeline
+        env:
+          TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_REPO_ID: ${{ secrets.HF_REPO_ID }}
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+          MONGO_DB: alphapulse
+        run: uv run python -m scripts.run_pipeline
+
+      - name: Verify quantitative integrity
+        run: uv run pytest -v
