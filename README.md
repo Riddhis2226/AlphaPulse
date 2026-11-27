@@ -1,5 +1,4 @@
 
-
 # AlphaPulse — Portfolio Risk & Volatility Monitor
 
 Multi-asset INR market-risk engine with VaR/CVaR, Euler risk attribution, and 10,000-path Cholesky Monte Carlo stress testing.
