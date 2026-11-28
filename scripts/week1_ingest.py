@@ -104,18 +104,63 @@ def fetch_twelvedata(
     )
 
 
-def fetch_yfinance_fallback(asset: AssetSpec, lookback_days: int) -> pl.DataFrame:
-    """Fallback fetcher using yfinance with corporate-action auto_adjust=True."""
+def fetch_yfinance_fallback(
+    asset: AssetSpec,
+    lookback_days: int,
+    max_retries: int = 3,
+) -> pl.DataFrame:
+    """Fallback fetcher using yfinance with retries, Ticker.history fallback, and local Parquet fallback."""
     period = "5y" if lookback_days >= 1000 else "2y"
-    df_pd = yf.download(
-        asset.yf_symbol,
-        period=period,
-        interval="1d",
-        auto_adjust=True,
-        progress=False,
-        multi_level_index=False,
-    )
-    if df_pd.empty:
+    df_pd = None
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            df_pd = yf.download(
+                asset.yf_symbol,
+                period=period,
+                interval="1d",
+                auto_adjust=True,
+                progress=False,
+                multi_level_index=False,
+            )
+            if df_pd is None or df_pd.empty:
+                df_pd = yf.Ticker(asset.yf_symbol).history(
+                    period=period,
+                    interval="1d",
+                    auto_adjust=True,
+                )
+            if df_pd is not None and not df_pd.empty:
+                break
+        except Exception as exc:
+            logger.warning(
+                "yfinance attempt %d/%d failed for %s (%s): %s",
+                attempt,
+                max_retries,
+                asset.asset_id,
+                asset.yf_symbol,
+                exc,
+            )
+        if attempt < max_retries:
+            time.sleep(2.0 * attempt)
+
+    if df_pd is None or df_pd.empty:
+        cached_parquet = PROCESSED_DIR / "market_prices.parquet"
+        if cached_parquet.exists():
+            cached_asset = (
+                pl.read_parquet(cached_parquet)
+                .filter(pl.col("asset_id") == asset.asset_id)
+                .select(["date", *NUMERIC_COLS, "asset_id", "sector", "source"])
+                .with_columns(*[pl.col(c).cast(pl.Float64) for c in NUMERIC_COLS])
+                .sort("date")
+            )
+            if cached_asset.height > 0:
+                logger.warning(
+                    "yfinance returned empty for %s after %d attempts; using cached local slice (%d rows).",
+                    asset.asset_id,
+                    max_retries,
+                    cached_asset.height,
+                )
+                return cached_asset
         msg = f"No market data returned for {asset.asset_id} ({asset.yf_symbol})"
         raise ValueError(msg)
 

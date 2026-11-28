@@ -63,23 +63,25 @@ CONCENTRATION_FLAG = 1.5  # risk share ÷ capital weight above this is flagged
 
 # ── Data ────────────────────────────────────────────────────────────────────
 def load_dataset() -> pl.DataFrame:
-    """Load cleaned market_prices.parquet locally or from Hugging Face Hub."""
+    """Load latest market_prices.parquet from Hugging Face Hub, falling back to local Parquet."""
     local_path = PROCESSED_DIR / "market_prices.parquet"
-    if local_path.exists():
-        return pl.read_parquet(local_path).sort(["asset_id", "date"])
-
     settings = get_settings()
     repo_id = settings.hf_repo_id or "RS2226/alphapulse-market-data"
+
     try:
         cached_path = hf_hub_download(
             repo_id=repo_id,
             filename="data/market_prices.parquet",
             repo_type="dataset",
             token=settings.hf_token or None,
+            force_download=True,
         )
         return pl.read_parquet(Path(cached_path)).sort(["asset_id", "date"])
     except (HfHubHTTPError, OSError) as exc:
-        msg = f"Unable to load market_prices.parquet locally or from Hugging Face ({repo_id}): {exc}"
+        logger.warning("Hugging Face fetch failed (%s); falling back to local Parquet.", exc)
+        if local_path.exists():
+            return pl.read_parquet(local_path).sort(["asset_id", "date"])
+        msg = f"Unable to load market_prices.parquet from Hugging Face ({repo_id}) or locally: {exc}"
         raise RuntimeError(msg) from exc
 
 
