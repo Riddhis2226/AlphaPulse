@@ -40,9 +40,9 @@ Technology (**TCS + INFY**) carries **33.0% of capital** but drives **45.5% of t
 ## Dashboard & Stack
 
 - **Overview:** KPI strip, cumulative wealth & underwater drawdown, weight-vs-risk bars, Euler attribution table, Paper/Graphite themes, and 1-click CSV tear-sheet export.
-- **Stress Test:** Instant sector shocks (*IT −15%*, *Crypto −40%*, *Energy −20%*, *Gold +15%*) + `@lru_cache` **10,000-path Cholesky Monte Carlo** (`30D / 90D / 1Y`).
-- **Risk & Technicals:** Correlation heatmap, risk-vs-return map, 30D rolling volatility regimes, and single-asset technical tear-sheet.
-- **Engineering Stack:** Python 3.11 (`uv`), `polars`, `numpy`, `scipy`, **Plotly Dash** (deployed on **Plotly Cloud**), **Twelve Data** + `yfinance`, **MongoDB**, **Hugging Face Hub**, Tableau CSVs, `ruff` (0 warnings), `pytest` (7/7 passing).
+- **Stress Test:** Instant sector shocks (*IT −15%*, *Crypto −40%*, *Energy −20%*, *Gold +15%*) + `@lru_cache` **10,000-path Cholesky Monte Carlo** (`30D / 90D / 1Y`) with **Normal** and **Student-t (`df=5`)** fat-tail modes.
+- **Risk & Technicals:** Correlation heatmap, risk-vs-return map, 30D rolling volatility regimes, **Kupiec & Christoffersen rolling VaR backtesting**, and single-asset technical tear-sheet.
+- **Engineering Stack:** Python 3.11 (`uv`), `polars`, `numpy`, `scipy`, **Plotly Dash** (deployed on **Plotly Cloud**), **Twelve Data** + `yfinance`, **MongoDB**, **Hugging Face Hub**, Tableau CSVs, `ruff` (0 warnings), `pytest` (10/10 passing).
 
 ---
 
@@ -66,6 +66,6 @@ uv run python -m scripts.run_pipeline && uv run ruff check . && uv run pytest -v
 
 ## Model Note & Author
 
-Metrics use daily log returns (`252` trading days/yr) with fixed weights, zero transaction costs, and `forward_fill()` holiday alignment; Gaussian Cholesky paths can understate crisis fat tails. Built strictly for financial analytics—not investment advice.
+Metrics use daily log returns (`252` trading days/yr) with fixed weights, zero transaction costs, and `forward_fill()` holiday alignment; Switch between Gaussian and Multivariate Student-t (`df=5`) Cholesky paths to stress-test crisis fat tails. Built strictly for financial analytics—not investment advice.
 
 **Riddhima Singh** · [GitHub](https://github.com/Riddhis2226) · *Infotact Solutions Enterprise Data Analytics Program (Q4 2025)*

@@ -31,7 +31,9 @@ from src.config import PORTFOLIO_ASSETS, PROCESSED_DIR, get_settings
 from src.quant_engine import (
     DEFAULT_RISK_FREE_RATE,
     TRADING_DAYS,
+    backtest_var_exceptions,
     build_price_matrix,
+    compute_euler_risk_attribution,
     compute_log_returns,
     compute_portfolio_kpis,
     compute_rolling_volatility,
@@ -74,7 +76,7 @@ def load_dataset() -> pl.DataFrame:
             filename="data/market_prices.parquet",
             repo_type="dataset",
             token=settings.hf_token or None,
-            force_download=True,
+            force_download=False,
         )
         return pl.read_parquet(Path(cached_path)).sort(["asset_id", "date"])
     except (HfHubHTTPError, OSError) as exc:
@@ -244,11 +246,8 @@ def compute_asset_intelligence(log_ret: pd.DataFrame, weights: np.ndarray, confi
 
     ann_ret = arr.mean(axis=0) * TRADING_DAYS
     ann_vol = arr.std(axis=0, ddof=1) * np.sqrt(TRADING_DAYS)
-    cov_ann = np.cov(arr, rowvar=False) * TRADING_DAYS
-
-    port_vol_ann = float(np.sqrt(weights.T @ cov_ann @ weights))
-    marginal = (cov_ann @ weights) / port_vol_ann if port_vol_ann > 0 else np.zeros_like(weights)
-    risk_share = (weights * marginal) / port_vol_ann if port_vol_ann > 0 else np.zeros_like(weights)
+    euler_df = compute_euler_risk_attribution(log_ret, weights)
+    risk_share = euler_df["risk_share"].to_numpy(dtype=np.float64)
     alpha = 1.0 - confidence
 
     rows = []
@@ -279,15 +278,20 @@ def compute_asset_intelligence(log_ret: pd.DataFrame, weights: np.ndarray, confi
     return pd.DataFrame(rows)
 
 
-@lru_cache(maxsize=64)
-def cached_monte_carlo(start_capital: float, horizon_days: int, confidence: float) -> dict:
-    """Memoised simulation.
+@lru_cache(maxsize=128)
+def cached_monte_carlo(
+    start_capital: float,
+    horizon_days: int,
+    confidence: float,
+    distribution: str = "normal",
+) -> dict:
+    """Memoised simulation supporting Gaussian and Student-t (df=5) fat-tail shocks.
 
     The 10k-path run is the slowest step in the app. Every control and the theme
     switch feed the same callback, so without a cache a dark-mode toggle re-runs the
-    simulation (and, if the engine is not seeded, shifts the reported VaR).
-    Treat the returned dict as read-only.
+    simulation. Treat the returned dict as read-only.
     """
+    dist_mode = "student_t" if distribution == "student_t" else "normal"
     return run_monte_carlo(
         LOG_RETURNS,
         BASE_WEIGHTS,
@@ -295,6 +299,8 @@ def cached_monte_carlo(start_capital: float, horizon_days: int, confidence: floa
         horizon_days=horizon_days,
         initial_capital=start_capital,
         confidence=confidence,
+        distribution=dist_mode,
+        df=5.0,
     )
 
 
@@ -474,9 +480,9 @@ def build_footer() -> dbc.Row:
             ),
             note(
                 "Simulation",
-                f"{MC_PATHS:,} paths of correlated returns (Cholesky factor of the sample covariance) at fixed weights, "
-                "calibrated on the full history regardless of the window above. A stress shock hits the target sector "
-                "instantly, before the paths start.",
+                f"{MC_PATHS:,} paths of correlated returns (Cholesky factor of the sample covariance, Gaussian or "
+                "Student-t df=5 fat-tail shocks) at fixed weights, calibrated on the full history regardless of the "
+                "window above. A stress shock hits the target sector instantly, before the paths start.",
             ),
             note(
                 "Scope",
@@ -599,6 +605,15 @@ def build_stress_tab() -> dbc.Container:
                                     ],
                                     252,
                                 ),
+                                html.Label("Return distribution", className="ap-field-label mt-3 mb-2 d-block"),
+                                segmented(
+                                    "radio-dist",
+                                    [
+                                        {"label": "Normal", "value": "normal"},
+                                        {"label": "Student-t (df=5)", "value": "student_t"},
+                                    ],
+                                    "normal",
+                                ),
                             ],
                             f"{MC_PATHS:,} simulated paths",
                         ),
@@ -683,6 +698,19 @@ def build_quant_tab() -> dbc.Container:
                             "30-day rolling volatility",
                             chart("quant-rolling-vol"),
                             "Annualised; the portfolio is the heavy line",
+                        ),
+                        lg=12,
+                        className="mb-3",
+                    )
+                ]
+            ),
+            dbc.Row(
+                [
+                    dbc.Col(
+                        build_card(
+                            "Rolling VaR backtest (Kupiec & Christoffersen)",
+                            html.Div(id="quant-var-backtest"),
+                            "Out-of-sample 1-day Historical VaR exception coverage & independence (5% significance)",
                         ),
                         lg=12,
                         className="mb-3",
@@ -1156,6 +1184,7 @@ def apply_stress_preset(preset_key: str) -> tuple[str, int]:
     Input("dropdown-sector", "value"),
     Input("slider-shock", "value"),
     Input("radio-horizon", "value"),
+    Input("radio-dist", "value"),
     Input("global-confidence", "value"),
     Input("theme-switch", "value"),
 )
@@ -1164,6 +1193,7 @@ def update_stress_tab(
     target_sector: str,
     shock_pct: float,
     horizon_days: int,
+    distribution: str,
     confidence: float,
     is_dark: bool,
 ) -> tuple[dbc.Row, go.Figure, go.Figure, go.Figure]:
@@ -1178,7 +1208,8 @@ def update_stress_tab(
     shocked_cap = init_cap * (1.0 + port_shock_pct)
     pnl_inr = shocked_cap - init_cap
 
-    mc = cached_monte_carlo(round(shocked_cap, 2), int(horizon_days), float(confidence))
+    dist_mode = distribution or "normal"
+    mc = cached_monte_carlo(round(shocked_cap, 2), int(horizon_days), float(confidence), dist_mode)
     fan = mc["percentile_fan"]
     term_vals = np.asarray(mc["terminal_values"], dtype=np.float64)
     prob_loss = float(np.mean(term_vals < init_cap))
@@ -1212,7 +1243,7 @@ def update_stress_tab(
             ),
             dbc.Col(
                 make_kpi_card(
-                    f"{horizon_label} Monte Carlo VaR ({conf_label})",
+                    f"{horizon_label} {'Student-t' if dist_mode == 'student_t' else 'Normal'} MC VaR ({conf_label})",
                     fmt_inr(mc["mc_var_95_horizon_inr"]),
                     f"Ends below {fmt_inr(init_cap)}",
                     f"{prob_loss:.1%} of paths",
@@ -1298,7 +1329,7 @@ def update_stress_tab(
             hovertemplate="₹%{x:,.0f}<br>%{y} paths<extra></extra>",
         )
     )
-    for value, label, color, dash in (  # noqa: F402
+    for value, label, color, line_dash in (
         (var_cutoff, f"{conf_label} VaR cut-off {fmt_inr(var_cutoff)}", pal["rose"], "dash"),
         (med_val, f"Median {fmt_inr(med_val)}", pal["emerald"], "dot"),
         (init_cap, f"Starting capital {fmt_inr(init_cap)}", pal["muted"], "dash"),
@@ -1309,7 +1340,7 @@ def update_stress_tab(
                 y=[0, y_top],
                 mode="lines",
                 name=label,
-                line={"color": color, "width": 1.5, "dash": dash},
+                line={"color": color, "width": 1.5, "dash": line_dash},
                 hoverinfo="skip",
             )
         )
@@ -1356,6 +1387,7 @@ def update_stress_tab(
     Output("quant-corr-heatmap", "figure"),
     Output("quant-efficiency-scatter", "figure"),
     Output("quant-rolling-vol", "figure"),
+    Output("quant-var-backtest", "children"),
     Input("global-window", "value"),
     Input("global-confidence", "value"),
     Input("theme-switch", "value"),
@@ -1364,7 +1396,7 @@ def update_quant_tab(
     window_days: int,
     confidence: float,
     is_dark: bool,
-) -> tuple[go.Figure, go.Figure, go.Figure]:
+) -> tuple[go.Figure, go.Figure, go.Figure, dbc.Row]:
     """Correlation heatmap, risk/return map with Sharpe line, and rolling volatility."""
     pal = get_palette(bool(is_dark))
     sector_colors = sector_color_map(pal)
@@ -1471,7 +1503,47 @@ def update_quant_tab(
     fig_vol.update_layout(legend=TOP_LEGEND, hovermode="x unified")
     fig_vol.update_yaxes(title_text="Annualised volatility", tickformat=".0%", hoverformat=".1%")
 
-    return fig_corr, fig_eff, fig_vol
+    bt_window = min(250, max(60, len(sub_ret) // 2))
+    bt = backtest_var_exceptions(sub_ret, BASE_WEIGHTS, confidence=float(confidence), window=bt_window)
+
+    def _bt_tile(title: str, headline_val: str, sub_l: str, sub_r: str, ok: bool | None) -> dbc.Col:
+        color = pal["primary"] if ok is None else (pal["emerald"] if ok else pal["rose"])
+        return dbc.Col(make_kpi_card(title, headline_val, sub_l, sub_r, color), md=6, lg=3, className="mb-2")
+
+    backtest_row = dbc.Row(
+        [
+            _bt_tile(
+                f"VaR breaches ({bt['n_observations']} OOS days)",
+                f"{bt['n_exceptions']} ({bt['observed_rate']:.2%})",
+                f"Expected {bt['expected_rate']:.2%}",
+                f"Roll {bt_window}D",
+                None,
+            ),
+            _bt_tile(
+                "Kupiec POF (coverage)",
+                "Pass" if bt["pass_kupiec"] else "Reject",
+                f"LR = {bt['kupiec_lr']:.2f}",
+                f"p = {bt['kupiec_p_value']:.3f}",
+                bool(bt["pass_kupiec"]),
+            ),
+            _bt_tile(
+                "Christoffersen (independence)",
+                "Pass" if bt["pass_christoffersen"] else "Reject",
+                f"LR = {bt['christoffersen_lr']:.2f}",
+                f"p = {bt['christoffersen_p_value']:.3f}",
+                bool(bt["pass_christoffersen"]),
+            ),
+            _bt_tile(
+                "Conditional coverage (joint)",
+                "Pass" if bt["pass_conditional_coverage"] else "Reject",
+                f"LR = {bt['conditional_coverage_lr']:.2f}",
+                f"p = {bt['conditional_coverage_p_value']:.3f}",
+                bool(bt["pass_conditional_coverage"]),
+            ),
+        ]
+    )
+
+    return fig_corr, fig_eff, fig_vol, backtest_row
 
 
 @app.callback(

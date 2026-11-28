@@ -1,4 +1,4 @@
-﻿name: AlphaPulse Daily Market Refresh
+name: AlphaPulse Daily Market Refresh
 
 on:
   schedule:

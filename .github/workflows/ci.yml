@@ -1,4 +1,4 @@
-﻿name: AlphaPulse CI
+name: AlphaPulse CI
 
 on:
   push:
