@@ -1,9 +1,9 @@
-name: AlphaPulse Daily Market Refresh
+name: AlphaPulse Live Market Refresh
 
 on:
   schedule:
-    # Runs Monday-Friday at 11:00 UTC (16:30 IST, 1 hour after NSE market close)
-    - cron: "0 11 * * 1-5"
+    # Runs every 30 minutes during NSE market hours & close (Mon-Fri 09:30-17:30 IST / 04:00-12:00 UTC)
+    - cron: "0,30 4-11 * * 1-5"
   workflow_dispatch:
 
 jobs:

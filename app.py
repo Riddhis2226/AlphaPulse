@@ -11,6 +11,9 @@ from __future__ import annotations
 import logging
 import math
 import os
+import threading
+import time
+from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 
@@ -21,6 +24,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import polars as pl
+import yfinance as yf
 from dash import Input, Output, State, dcc, html
 from flask import jsonify
 from huggingface_hub import hf_hub_download
@@ -31,9 +35,7 @@ from src.config import PORTFOLIO_ASSETS, PROCESSED_DIR, get_settings
 from src.quant_engine import (
     DEFAULT_RISK_FREE_RATE,
     TRADING_DAYS,
-    backtest_var_exceptions,
     build_price_matrix,
-    compute_euler_risk_attribution,
     compute_log_returns,
     compute_portfolio_kpis,
     compute_rolling_volatility,
@@ -64,33 +66,157 @@ CONCENTRATION_FLAG = 1.5  # risk share ÷ capital weight above this is flagged
 
 
 # ── Data ────────────────────────────────────────────────────────────────────
+LIVE_TTL_SECONDS = 900  # 15-minute live market refresh cadence
+_STATE_LOCK = threading.Lock()
+_LAST_REFRESH_MONO = 0.0
+LAST_SYNC_UTC = ""
+
+
+def _fetch_live_yfinance_tail(base_df: pl.DataFrame) -> pl.DataFrame:
+    """Append any newer common NSE trading date from yfinance (15-20 min delayed live bars)."""
+    try:
+        max_existing = base_df["date"].max()
+        yf_map = {a.yf_symbol: a for a in PORTFOLIO_ASSETS}
+        tickers = [*yf_map.keys(), "INR=X"]
+        raw = yf.download(
+            tickers,
+            period="5d",
+            interval="1d",
+            auto_adjust=True,
+            progress=False,
+            group_by="ticker",
+            threads=True,
+        )
+        if raw is None or raw.empty:
+            return base_df
+
+        fx_series = raw["INR=X"]["Close"].dropna() if "INR=X" in raw.columns.get_level_values(0) else None
+        if fx_series is None or fx_series.empty:
+            return base_df
+        fx_series.index = pd.to_datetime(fx_series.index).date
+
+        new_rows: list[dict[str, object]] = []
+        latest_dates: list[object] = []
+        for sym, spec in yf_map.items():
+            if sym not in raw.columns.get_level_values(0):
+                return base_df
+            sub = raw[sym][["Open", "High", "Low", "Close", "Volume"]].dropna(subset=["Close"])
+            if sub.empty:
+                return base_df
+            sub = sub.copy()
+            sub.index = pd.to_datetime(sub.index).date
+            sub = sub[sub.index > max_existing]
+            if sub.empty:
+                return base_df
+            latest_dates.append(max(sub.index))
+            for dt, row in sub.iterrows():
+                fx_val = float(fx_series.get(dt, fx_series.iloc[-1])) if spec.currency == "USD" else 1.0
+                new_rows.append(
+                    {
+                        "date": dt,
+                        "open": float(row["Open"]) * fx_val if pd.notna(row["Open"]) else float(row["Close"]) * fx_val,
+                        "high": float(row["High"]) * fx_val if pd.notna(row["High"]) else float(row["Close"]) * fx_val,
+                        "low": float(row["Low"]) * fx_val if pd.notna(row["Low"]) else float(row["Close"]) * fx_val,
+                        "close": float(row["Close"]) * fx_val,
+                        "volume": float(row["Volume"]) if pd.notna(row["Volume"]) else 0.0,
+                        "asset_id": spec.asset_id,
+                        "sector": spec.sector,
+                        "source": "yfinance_live",
+                    }
+                )
+
+        if not new_rows:
+            return base_df
+        common_max = min(latest_dates)
+        tail_df = (
+            pl.DataFrame(new_rows)
+            .with_columns(
+                pl.col("date").cast(pl.Date),
+                *[pl.col(c).cast(pl.Float32) for c in ("open", "high", "low", "close", "volume")],
+            )
+            .filter(pl.col("date") <= common_max)
+            .select(base_df.columns)
+        )
+        if tail_df.height == len(PORTFOLIO_ASSETS):
+            merged = pl.concat([base_df, tail_df], how="vertical").unique(
+                subset=["date", "asset_id"], keep="last"
+            )
+            return merged.sort(["asset_id", "date"])
+    except Exception as exc:
+        logger.debug("Live yfinance tail check skipped: %s", exc)
+    return base_df
+
+
 def load_dataset() -> pl.DataFrame:
-    """Load latest market_prices.parquet from Hugging Face Hub, falling back to local Parquet."""
+    """Load latest market_prices.parquet from Hugging Face Hub, patch live yfinance bars, or fall back locally."""
     local_path = PROCESSED_DIR / "market_prices.parquet"
     settings = get_settings()
     repo_id = settings.hf_repo_id or "RS2226/alphapulse-market-data"
 
+    base_df: pl.DataFrame | None = None
     try:
         cached_path = hf_hub_download(
             repo_id=repo_id,
             filename="data/market_prices.parquet",
             repo_type="dataset",
             token=settings.hf_token or None,
-            force_download=False,
+            force_download=True,
         )
-        return pl.read_parquet(Path(cached_path)).sort(["asset_id", "date"])
+        base_df = pl.read_parquet(Path(cached_path)).sort(["asset_id", "date"])
     except (HfHubHTTPError, OSError) as exc:
         logger.warning("Hugging Face fetch failed (%s); falling back to local Parquet.", exc)
         if local_path.exists():
-            return pl.read_parquet(local_path).sort(["asset_id", "date"])
-        msg = f"Unable to load market_prices.parquet from Hugging Face ({repo_id}) or locally: {exc}"
-        raise RuntimeError(msg) from exc
+            base_df = pl.read_parquet(local_path).sort(["asset_id", "date"])
+
+    if base_df is None:
+        msg = f"Unable to load market_prices.parquet from Hugging Face ({repo_id}) or locally."
+        raise RuntimeError(msg)
+
+    return _fetch_live_yfinance_tail(base_df)
+
+
+def _fmt_date(value: object) -> str:
+    return pd.Timestamp(value).strftime("%d %b %Y")
+
+
+def refresh_market_state(force: bool = False) -> bool:
+    """Refresh in-memory market state if the 15-minute live TTL has expired."""
+    global RAW_DF, PRICE_MATRIX, LOG_RETURNS, ROLLING_VOL, DATA_START, DATA_END
+    global _LAST_REFRESH_MONO, LAST_SYNC_UTC
+
+    now_mono = time.monotonic()
+    if not force and (now_mono - _LAST_REFRESH_MONO) < LIVE_TTL_SECONDS:
+        return False
+
+    with _STATE_LOCK:
+        now_mono = time.monotonic()
+        if not force and (now_mono - _LAST_REFRESH_MONO) < LIVE_TTL_SECONDS:
+            return False
+
+        fresh_df = load_dataset()
+        fresh_prices = build_price_matrix(fresh_df)
+        fresh_ret = compute_log_returns(fresh_prices)
+        fresh_vol = compute_rolling_volatility(fresh_ret, window=30)
+
+        RAW_DF = fresh_df
+        PRICE_MATRIX = fresh_prices
+        LOG_RETURNS = fresh_ret
+        ROLLING_VOL = fresh_vol
+        DATA_START = _fmt_date(PRICE_MATRIX.index[0])
+        DATA_END = _fmt_date(PRICE_MATRIX.index[-1])
+        _LAST_REFRESH_MONO = time.monotonic()
+        LAST_SYNC_UTC = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
+        if "_cached_mc" in globals():
+            _cached_mc.cache_clear()
+        return True
 
 
 RAW_DF = load_dataset()
 PRICE_MATRIX = build_price_matrix(RAW_DF)
 LOG_RETURNS = compute_log_returns(PRICE_MATRIX)
 ROLLING_VOL = compute_rolling_volatility(LOG_RETURNS, window=30)
+_LAST_REFRESH_MONO = time.monotonic()
+LAST_SYNC_UTC = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
 
 ASSET_IDS = list(PRICE_MATRIX.columns)
 ASSET_SPECS = [a for a in PORTFOLIO_ASSETS if a.asset_id in ASSET_IDS]
@@ -101,11 +227,6 @@ BASE_WEIGHTS = np.array([WEIGHTS_MAP[aid] for aid in ASSET_IDS], dtype=np.float6
 BASE_WEIGHTS = BASE_WEIGHTS / BASE_WEIGHTS.sum()
 NORM_WEIGHTS = dict(zip(ASSET_IDS, BASE_WEIGHTS.tolist(), strict=True))  # always sums to 1
 SECTORS = sorted(set(SECTOR_MAP.values()))
-
-
-def _fmt_date(value: object) -> str:
-    return pd.Timestamp(value).strftime("%d %b %Y")
-
 
 DATA_START = _fmt_date(PRICE_MATRIX.index[0])
 DATA_END = _fmt_date(PRICE_MATRIX.index[-1])
@@ -246,8 +367,11 @@ def compute_asset_intelligence(log_ret: pd.DataFrame, weights: np.ndarray, confi
 
     ann_ret = arr.mean(axis=0) * TRADING_DAYS
     ann_vol = arr.std(axis=0, ddof=1) * np.sqrt(TRADING_DAYS)
-    euler_df = compute_euler_risk_attribution(log_ret, weights)
-    risk_share = euler_df["risk_share"].to_numpy(dtype=np.float64)
+    cov_ann = np.cov(arr, rowvar=False) * TRADING_DAYS
+
+    port_vol_ann = float(np.sqrt(weights.T @ cov_ann @ weights))
+    marginal = (cov_ann @ weights) / port_vol_ann if port_vol_ann > 0 else np.zeros_like(weights)
+    risk_share = (weights * marginal) / port_vol_ann if port_vol_ann > 0 else np.zeros_like(weights)
     alpha = 1.0 - confidence
 
     rows = []
@@ -278,20 +402,15 @@ def compute_asset_intelligence(log_ret: pd.DataFrame, weights: np.ndarray, confi
     return pd.DataFrame(rows)
 
 
-@lru_cache(maxsize=128)
-def cached_monte_carlo(
-    start_capital: float,
-    horizon_days: int,
-    confidence: float,
-    distribution: str = "normal",
-) -> dict:
-    """Memoised simulation supporting Gaussian and Student-t (df=5) fat-tail shocks.
+@lru_cache(maxsize=64)
+def cached_monte_carlo(start_capital: float, horizon_days: int, confidence: float) -> dict:
+    """Memoised simulation.
 
     The 10k-path run is the slowest step in the app. Every control and the theme
     switch feed the same callback, so without a cache a dark-mode toggle re-runs the
-    simulation. Treat the returned dict as read-only.
+    simulation (and, if the engine is not seeded, shifts the reported VaR).
+    Treat the returned dict as read-only.
     """
-    dist_mode = "student_t" if distribution == "student_t" else "normal"
     return run_monte_carlo(
         LOG_RETURNS,
         BASE_WEIGHTS,
@@ -299,8 +418,6 @@ def cached_monte_carlo(
         horizon_days=horizon_days,
         initial_capital=start_capital,
         confidence=confidence,
-        distribution=dist_mode,
-        df=5.0,
     )
 
 
@@ -480,9 +597,9 @@ def build_footer() -> dbc.Row:
             ),
             note(
                 "Simulation",
-                f"{MC_PATHS:,} paths of correlated returns (Cholesky factor of the sample covariance, Gaussian or "
-                "Student-t df=5 fat-tail shocks) at fixed weights, calibrated on the full history regardless of the "
-                "window above. A stress shock hits the target sector instantly, before the paths start.",
+                f"{MC_PATHS:,} paths of correlated returns (Cholesky factor of the sample covariance) at fixed weights, "
+                "calibrated on the full history regardless of the window above. A stress shock hits the target sector "
+                "instantly, before the paths start.",
             ),
             note(
                 "Scope",
@@ -605,15 +722,6 @@ def build_stress_tab() -> dbc.Container:
                                     ],
                                     252,
                                 ),
-                                html.Label("Return distribution", className="ap-field-label mt-3 mb-2 d-block"),
-                                segmented(
-                                    "radio-dist",
-                                    [
-                                        {"label": "Normal", "value": "normal"},
-                                        {"label": "Student-t (df=5)", "value": "student_t"},
-                                    ],
-                                    "normal",
-                                ),
                             ],
                             f"{MC_PATHS:,} simulated paths",
                         ),
@@ -708,19 +816,6 @@ def build_quant_tab() -> dbc.Container:
                 [
                     dbc.Col(
                         build_card(
-                            "Rolling VaR backtest (Kupiec & Christoffersen)",
-                            html.Div(id="quant-var-backtest"),
-                            "Out-of-sample 1-day Historical VaR exception coverage & independence (5% significance)",
-                        ),
-                        lg=12,
-                        className="mb-3",
-                    )
-                ]
-            ),
-            dbc.Row(
-                [
-                    dbc.Col(
-                        build_card(
                             "Single-asset view",
                             [
                                 dbc.Row(
@@ -771,12 +866,15 @@ server = app.server
 @server.route("/healthz")
 def healthz():
     """Production healthcheck endpoint for uptime monitors and cloud WSGI probes."""
+    refresh_market_state()
     return (
         jsonify(
             {
                 "status": "ok",
                 "service": "alphapulse",
                 "data_through": str(DATA_END),
+                "last_sync_utc": LAST_SYNC_UTC,
+                "live_ttl_seconds": LIVE_TTL_SECONDS,
                 "trading_days": int(len(PRICE_MATRIX)),
                 "assets": int(PRICE_MATRIX.shape[1]),
             }
@@ -789,6 +887,7 @@ app.layout = html.Div(
     **{"data-theme": "light"},
     children=[
         dcc.Download(id="download-tearsheet"),
+        dcc.Interval(id="live-refresh-interval", interval=15 * 60 * 1000, n_intervals=0),
         dbc.Navbar(
             dbc.Container(
                 [
@@ -802,7 +901,8 @@ app.layout = html.Div(
                     html.Div(
                         [
                             html.Span(
-                                f"Data through {DATA_END}",
+                                f"Live · Data through {DATA_END}",
+                                id="status-data-through",
                                 className="ap-status-pill ap-mono me-3 d-none d-lg-inline-flex",
                             ),
                             dbc.Button("Export CSV", id="btn-export-csv", size="sm", className="ap-btn me-3"),
@@ -1184,7 +1284,6 @@ def apply_stress_preset(preset_key: str) -> tuple[str, int]:
     Input("dropdown-sector", "value"),
     Input("slider-shock", "value"),
     Input("radio-horizon", "value"),
-    Input("radio-dist", "value"),
     Input("global-confidence", "value"),
     Input("theme-switch", "value"),
 )
@@ -1193,7 +1292,6 @@ def update_stress_tab(
     target_sector: str,
     shock_pct: float,
     horizon_days: int,
-    distribution: str,
     confidence: float,
     is_dark: bool,
 ) -> tuple[dbc.Row, go.Figure, go.Figure, go.Figure]:
@@ -1208,8 +1306,7 @@ def update_stress_tab(
     shocked_cap = init_cap * (1.0 + port_shock_pct)
     pnl_inr = shocked_cap - init_cap
 
-    dist_mode = distribution or "normal"
-    mc = cached_monte_carlo(round(shocked_cap, 2), int(horizon_days), float(confidence), dist_mode)
+    mc = cached_monte_carlo(round(shocked_cap, 2), int(horizon_days), float(confidence))
     fan = mc["percentile_fan"]
     term_vals = np.asarray(mc["terminal_values"], dtype=np.float64)
     prob_loss = float(np.mean(term_vals < init_cap))
@@ -1243,7 +1340,7 @@ def update_stress_tab(
             ),
             dbc.Col(
                 make_kpi_card(
-                    f"{horizon_label} {'Student-t' if dist_mode == 'student_t' else 'Normal'} MC VaR ({conf_label})",
+                    f"{horizon_label} Monte Carlo VaR ({conf_label})",
                     fmt_inr(mc["mc_var_95_horizon_inr"]),
                     f"Ends below {fmt_inr(init_cap)}",
                     f"{prob_loss:.1%} of paths",
@@ -1329,7 +1426,7 @@ def update_stress_tab(
             hovertemplate="₹%{x:,.0f}<br>%{y} paths<extra></extra>",
         )
     )
-    for value, label, color, line_dash in (
+    for value, label, color, dash in (  # noqa: F402
         (var_cutoff, f"{conf_label} VaR cut-off {fmt_inr(var_cutoff)}", pal["rose"], "dash"),
         (med_val, f"Median {fmt_inr(med_val)}", pal["emerald"], "dot"),
         (init_cap, f"Starting capital {fmt_inr(init_cap)}", pal["muted"], "dash"),
@@ -1340,7 +1437,7 @@ def update_stress_tab(
                 y=[0, y_top],
                 mode="lines",
                 name=label,
-                line={"color": color, "width": 1.5, "dash": line_dash},
+                line={"color": color, "width": 1.5, "dash": dash},
                 hoverinfo="skip",
             )
         )
@@ -1387,17 +1484,19 @@ def update_stress_tab(
     Output("quant-corr-heatmap", "figure"),
     Output("quant-efficiency-scatter", "figure"),
     Output("quant-rolling-vol", "figure"),
-    Output("quant-var-backtest", "children"),
     Input("global-window", "value"),
     Input("global-confidence", "value"),
     Input("theme-switch", "value"),
+    Input("live-refresh-interval", "n_intervals"),
 )
 def update_quant_tab(
     window_days: int,
     confidence: float,
     is_dark: bool,
-) -> tuple[go.Figure, go.Figure, go.Figure, dbc.Row]:
+    _n_intervals: int = 0,
+) -> tuple[go.Figure, go.Figure, go.Figure]:
     """Correlation heatmap, risk/return map with Sharpe line, and rolling volatility."""
+    refresh_market_state()
     pal = get_palette(bool(is_dark))
     sector_colors = sector_color_map(pal)
     sub_ret = window_returns(window_days)
@@ -1503,47 +1602,7 @@ def update_quant_tab(
     fig_vol.update_layout(legend=TOP_LEGEND, hovermode="x unified")
     fig_vol.update_yaxes(title_text="Annualised volatility", tickformat=".0%", hoverformat=".1%")
 
-    bt_window = min(250, max(60, len(sub_ret) // 2))
-    bt = backtest_var_exceptions(sub_ret, BASE_WEIGHTS, confidence=float(confidence), window=bt_window)
-
-    def _bt_tile(title: str, headline_val: str, sub_l: str, sub_r: str, ok: bool | None) -> dbc.Col:
-        color = pal["primary"] if ok is None else (pal["emerald"] if ok else pal["rose"])
-        return dbc.Col(make_kpi_card(title, headline_val, sub_l, sub_r, color), md=6, lg=3, className="mb-2")
-
-    backtest_row = dbc.Row(
-        [
-            _bt_tile(
-                f"VaR breaches ({bt['n_observations']} OOS days)",
-                f"{bt['n_exceptions']} ({bt['observed_rate']:.2%})",
-                f"Expected {bt['expected_rate']:.2%}",
-                f"Roll {bt_window}D",
-                None,
-            ),
-            _bt_tile(
-                "Kupiec POF (coverage)",
-                "Pass" if bt["pass_kupiec"] else "Reject",
-                f"LR = {bt['kupiec_lr']:.2f}",
-                f"p = {bt['kupiec_p_value']:.3f}",
-                bool(bt["pass_kupiec"]),
-            ),
-            _bt_tile(
-                "Christoffersen (independence)",
-                "Pass" if bt["pass_christoffersen"] else "Reject",
-                f"LR = {bt['christoffersen_lr']:.2f}",
-                f"p = {bt['christoffersen_p_value']:.3f}",
-                bool(bt["pass_christoffersen"]),
-            ),
-            _bt_tile(
-                "Conditional coverage (joint)",
-                "Pass" if bt["pass_conditional_coverage"] else "Reject",
-                f"LR = {bt['conditional_coverage_lr']:.2f}",
-                f"p = {bt['conditional_coverage_p_value']:.3f}",
-                bool(bt["pass_conditional_coverage"]),
-            ),
-        ]
-    )
-
-    return fig_corr, fig_eff, fig_vol, backtest_row
+    return fig_corr, fig_eff, fig_vol
 
 
 @app.callback(
