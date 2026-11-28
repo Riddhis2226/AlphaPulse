@@ -18,6 +18,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import dash
+from flask import jsonify
 import dash_bootstrap_components as dbc
 import numpy as np
 import pandas as pd
@@ -26,7 +27,6 @@ import plotly.graph_objects as go
 import polars as pl
 import yfinance as yf
 from dash import Input, Output, State, dcc, html
-from flask import jsonify
 from huggingface_hub import hf_hub_download
 from huggingface_hub.errors import HfHubHTTPError
 from plotly.subplots import make_subplots
@@ -206,8 +206,9 @@ def refresh_market_state(force: bool = False) -> bool:
         DATA_END = _fmt_date(PRICE_MATRIX.index[-1])
         _LAST_REFRESH_MONO = time.monotonic()
         LAST_SYNC_UTC = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
-        if "_cached_mc" in globals():
-            _cached_mc.cache_clear()
+        mc_fn = globals().get("cached_monte_carlo")
+        if mc_fn is not None:
+            mc_fn.cache_clear()
         return True
 
 
